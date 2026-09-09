@@ -1,0 +1,74 @@
+MIGRACIÓN DE TU CORREO A MICROSOFT 365
+======================================
+
+Esta herramienta copia el contenido de tu buzón antiguo
+a tu cuenta de Microsoft 365.
+
+Tu correo antiguo NO se modifica ni se borra. Solo se copia.
+
+
+CÓMO ABRIRLA (importante la primera vez)
+----------------------------------------
+
+NO le des doble clic la primera vez. macOS lo bloqueará.
+
+  1. Haz clic derecho sobre "MigradorCorreo"
+  2. Elige "Abrir"
+  3. En el aviso que sale, vuelve a pulsar "Abrir"
+
+Se abrirá una ventana negra y, enseguida, tu navegador.
+La ventana negra debe quedarse abierta mientras dure la copia.
+
+Si el navegador no se abre solo, copia la dirección que aparece
+en la ventana negra (empieza por http://127.0.0.1) y pégala tú.
+
+
+QUÉ TE VA A PEDIR
+-----------------
+
+  1. Tu dirección de correo antigua y su contraseña
+  2. Tu cuenta de Microsoft 365
+  3. El nombre de la carpeta donde quieres que se copie todo
+
+Después te mostrará un código. Ábrelo en la página de Microsoft
+que te indica, escribe ese código y entra con tu cuenta de
+Microsoft 365. La pantalla continuará sola.
+
+
+MIENTRAS COPIA
+--------------
+
+Verás una barra de progreso. Puedes detenerla cuando quieras:
+al volver a abrirla continúa donde iba y no duplica nada.
+
+Si aparece "Se interrumpió la conexión. Reconectando", no pasa
+nada: el servidor de Microsoft corta las sesiones largas y la
+herramienta se reconecta sola.
+
+
+AL TERMINAR
+-----------
+
+Descarga el comprobante. Es tu constancia de qué se copió y
+a dónde. Guárdalo.
+
+
+QUÉ NO SE COPIA
+---------------
+
+Solo se copian correos y carpetas.
+
+NO se copian calendarios, contactos, tareas ni reglas de bandeja.
+Si tienes algo de eso en el correo antiguo, avísanos antes de
+que demos de baja el buzón.
+
+
+SI ALGO FALLA
+-------------
+
+Si dice que no pudo entrar en tu correo antiguo, puede que no
+sea tu contraseña: el servidor limita los intentos cuando varias
+personas entran a la vez. Espera unos minutos y vuelve a probar.
+
+Para cualquier otra cosa, copia lo que diga la pantalla y
+envíaselo a quien te dio esta herramienta.

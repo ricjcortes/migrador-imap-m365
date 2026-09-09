@@ -1,0 +1,88 @@
+# Construye el ejecutable del Migrador de Correo en las tres plataformas.
+#
+# Resuelve el problema de fondo: PyInstaller genera un binario para el sistema
+# donde se ejecuta, asi que sin esto hace falta un equipo de cada tipo. Aqui los
+# pone GitHub.
+#
+# Se dispara a mano desde la pestania Actions, o al publicar una etiqueta. No en
+# cada empujon: construir tres binarios por cada cambio de una coma no aporta.
+#
+# Los binarios quedan como artefactos descargables durante 90 dias.
+
+name: Construir ejecutables
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  construir:
+    strategy:
+      fail-fast: false      # que falle uno no debe cancelar los otros dos
+      matrix:
+        include:
+          - so: windows-latest
+            nombre: windows-x86_64
+            binario: dist/MigradorCorreo.exe
+          - so: macos-latest
+            nombre: macos-arm64
+            binario: dist/MigradorCorreo
+          - so: macos-13         # ultimo ejecutor con Intel
+            nombre: macos-x86_64
+            binario: dist/MigradorCorreo
+          - so: ubuntu-latest
+            nombre: linux-x86_64
+            binario: dist/MigradorCorreo
+
+    runs-on: ${{ matrix.so }}
+    name: ${{ matrix.nombre }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requisitos.txt
+
+      - name: Inyectar la configuracion del tenant
+        # Los identificadores no estan en el codigo, que es publico. Vienen de
+        # los secretos del repositorio y solo existen durante la construccion.
+        # Si no estan configurados, el binario sale generico y funciona igual
+        # poniendole un config.json al lado.
+        env:
+          MIGRADOR_APP_ID: ${{ secrets.MIGRADOR_APP_ID }}
+          MIGRADOR_TENANT_ID: ${{ secrets.MIGRADOR_TENANT_ID }}
+        run: python receta/generar_config.py
+
+      - name: Construir
+        run: pyinstaller --noconfirm --clean receta/MigradorCorreo.spec
+
+      - name: Firma ad-hoc (solo macOS)
+        if: startsWith(matrix.so, 'macos')
+        run: codesign --force --deep --sign - dist/MigradorCorreo || true
+
+      - name: Verificar
+        # La verificacion es parte de la construccion, no un extra: si el binario
+        # no arranca o no negocia TLS con los servidores, este trabajo debe
+        # fallar y no publicar nada.
+        run: python verificar.py
+
+      - name: Publicar el binario
+        uses: actions/upload-artifact@v4
+        with:
+          name: MigradorCorreo-${{ matrix.nombre }}
+          path: |
+            ${{ matrix.binario }}
+            LEEME-PRIMERO.txt
+          retention-days: 90
+          if-no-files-found: error

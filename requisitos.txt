@@ -1,0 +1,8 @@
+# Dependencias para construir el ejecutable.
+#
+# Se fija un minimo y no una version exacta: el paquete tiene que construirse en
+# Windows, macOS y Linux, con versiones de Python que van de la 3.9 a la 3.14, y
+# una version clavada dejaria fuera alguna de esas combinaciones. Los minimos son
+# los primeros que se han probado funcionando.
+pyinstaller>=6.10
+msal>=1.31

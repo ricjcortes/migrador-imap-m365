@@ -1,0 +1,13 @@
+# Generado al construir con los identificadores del tenant. Este repositorio es
+# publico: esto es exactamente lo que no debe estar aqui.
+src/config_compilado.py
+config.json
+
+# Artefactos de construccion
+build/
+dist/
+.venv-construccion/
+__pycache__/
+*.py[cod]
+
+.DS_Store
