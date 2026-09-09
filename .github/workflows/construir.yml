@@ -32,7 +32,12 @@ jobs:
           - so: macos-latest
             nombre: macos-arm64
             binario: dist/MigradorCorreo
-          - so: macos-13         # ultimo ejecutor con Intel
+          # GitHub esta retirando los ejecutores macos-13, que eran los ultimos
+          # con Intel; una corrida los espero siete horas hasta que la cancelo.
+          # macos-15-intel es el reemplazo. Si tampoco estuviera disponible, el
+          # binario para Mac Intel se construye en local desde un Mac con Apple
+          # Silicon usando Rosetta, que es lo que hace receta/construir.sh.
+          - so: macos-15-intel
             nombre: macos-x86_64
             binario: dist/MigradorCorreo
           - so: ubuntu-latest
@@ -41,6 +46,8 @@ jobs:
 
     runs-on: ${{ matrix.so }}
     name: ${{ matrix.nombre }}
+    # Sin esto, un ejecutor que no llega deja el trabajo en cola durante horas.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
