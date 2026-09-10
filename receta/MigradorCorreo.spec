@@ -31,6 +31,10 @@ a = Analysis(
         "msal.token_cache", "msal.throttled_http_client",
         # De la biblioteca estandar, declarados para que no queden fuera.
         "imaplib", "sqlite3", "ssl", "email", "webbrowser",
+        # certifi lleva el cacert.pem contra el que se verifica TLS. Sin el, en
+        # Windows la conexion depende del almacen del sistema y falla en equipos
+        # que aun no tienen cacheada la raiz de Microsoft.
+        "certifi",
         # Generado por receta/generar_config.py justo antes de construir. Puede
         # no existir: entonces el binario sale generico y pide configuracion.
         "config_compilado",

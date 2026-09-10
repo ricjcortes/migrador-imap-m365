@@ -21,6 +21,18 @@ no duplica nada.
 | Nombres con acentos y eñes (UTF-7 modificado) | Reglas de bandeja |
 | Carpetas vacías | Respuestas automáticas |
 
+## Si tu organización inspecciona el tráfico TLS
+
+La verificación de certificados se hace contra el paquete de raíces que viaja
+dentro del ejecutable, no contra el almacén del sistema. Eso hace que se comporte
+igual en Windows, macOS y Linux.
+
+Si la organización tiene un proxy que inspecciona TLS, su certificado raíz no
+está —ni puede estar— en ese paquete. Para ese caso, apunta al raíz de la
+organización con `MIGRADOR_CA_BUNDLE`, o ponlo en el `config.json` junto al
+ejecutable como `"ca_bundle"`. La herramienta lo dice en el mensaje de error
+cuando ocurre.
+
 ## Configuración
 
 El código **no lleva ningún identificador de organización**. Para funcionar
@@ -190,6 +202,65 @@ el ataque, sobre todo en tenants sin Acceso Condicional.
 
 Por la misma razón, **los binarios construidos no se publican como Release**: los
 artefactos de Actions requieren sesión iniciada en GitHub para descargarse.
+
+## Firmar el ejecutable de Windows
+
+El flujo ya trae el paso de firma. Falta darle el certificado, y **el certificado
+no va en el repositorio**.
+
+### Por qué no va en el repositorio
+
+Una llave de firma de código dentro de un repositorio la puede extraer cualquiera
+con acceso de lectura, y sirve para firmar cualquier programa, no solo este.
+Windows lo presentaría como software legítimo de la organización. Es un vector de
+ataque de cadena de suministro conocido y explotado, y por eso el `.gitignore` de
+este proyecto ya lista `*.pfx`, `*.p12`, `*.pem` y `*.key` bajo «nunca, bajo
+ninguna circunstancia».
+
+Si el certificado llega a entrar al historial de git, no basta con borrarlo en un
+commit posterior: hay que **revocarlo y emitir uno nuevo**.
+
+### Cómo darle el certificado sin versionarlo
+
+1. Convierte el `.pfx` a base64:
+
+   ```bash
+   base64 -i certificado.pfx | tr -d '\n' | pbcopy     # macOS
+   ```
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("certificado.pfx")) | Set-Clipboard
+   ```
+
+2. En *Settings > Secrets and variables > Actions*, crea:
+   - `WINDOWS_CERT_PFX_BASE64` — el texto del paso anterior
+   - `WINDOWS_CERT_PASSWORD` — la contraseña del `.pfx`
+
+3. Vuelve a ejecutar *Construir ejecutables*.
+
+Durante la construcción el certificado se materializa en un archivo temporal del
+ejecutor y se borra en un bloque `finally`, pase lo que pase. Si los secretos no
+están definidos, el paso avisa y continúa: el binario sale sin firmar en vez de
+no salir.
+
+La firma lleva sellado de tiempo contra `timestamp.digicert.com`. No es un
+adorno: sin él, la firma deja de ser válida el día que expire el certificado y
+los binarios ya repartidos empiezan a dar aviso todos a la vez.
+
+### Dos cosas que conviene saber antes de comprar o generar un certificado
+
+**Un certificado autofirmado no sirve para esto.** Windows solo confía en
+certificados emitidos por una autoridad reconocida. Firmar con uno propio no
+quita el aviso de SmartScreen; solo cambia el texto. Si el plan era generar uno,
+no va a resolver el problema.
+
+**Desde junio de 2023, los certificados de firma de código de confianza pública
+exigen que la llave privada viva en hardware (HSM) o en un servicio de firma en
+la nube.** Ya no se emiten como `.pfx` exportable. Si tienes un `.pfx` con llave
+exportable, o es anterior a esa fecha, o es autofirmado. Para un certificado
+actual, el camino es un servicio de firma —Azure Trusted Signing es el más
+directo si ya hay tenant de Microsoft— y entonces el paso del flujo cambia: en
+vez de un `.pfx`, se autentica contra el servicio.
 
 ## Un límite que conviene tener claro
 

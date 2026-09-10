@@ -6,3 +6,8 @@
 # los primeros que se han probado funcionando.
 pyinstaller>=6.10
 msal>=1.31
+
+# Paquete de certificados raiz. Llega como dependencia de requests, pero se
+# declara aparte porque de el depende que la verificacion TLS funcione igual
+# en todos los equipos, sin depender del almacen del sistema.
+certifi

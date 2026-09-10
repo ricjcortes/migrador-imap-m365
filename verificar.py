@@ -99,7 +99,14 @@ titulo("2. Arranca en un entorno limpio y sirve su pagina")
 puerto = puerto_libre()
 # Entorno minimo: sin PATH, sin PYTHONPATH, sin nada del equipo. Si arranca asi,
 # es autocontenido de verdad.
-entorno = {"HOME": os.path.expanduser("~")}
+entorno = {
+    "HOME": os.path.expanduser("~"),
+    # Un identificador de mentira, solo para que arranque. Se comprueba que el
+    # binario funciona, no que este configurado: uno generico -que es una forma
+    # de construirlo perfectamente valida- se niega a arrancar sin esto, y eso
+    # no es un defecto del binario.
+    "MIGRADOR_APP_ID": "00000000-0000-0000-0000-000000000000",
+}
 if ES_WINDOWS:
     for k in ("SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA"):
         if os.environ.get(k):
@@ -169,12 +176,22 @@ finally:
 # --------------------------------------------------------------------- 4. TLS
 titulo("3. Conexion TLS con los servidores de correo")
 print("  (esta es la que falla en silencio si el Python usado trae una")
-print("   biblioteca TLS demasiado vieja para lo que exigen los servidores)")
+print("   biblioteca TLS demasiado vieja, y la que fallaba en Windows cuando")
+print("   la verificacion dependia del almacen de certificados del sistema)")
 print()
+
+sys.path.insert(0, os.path.join(RAIZ, "src"))
+try:
+    from migrador import contexto_tls
+    origen_ctx = "el mismo contexto que usa la herramienta"
+except Exception:
+    contexto_tls = ssl.create_default_context
+    origen_ctx = "el contexto por defecto (no se pudo importar el de la herramienta)"
+print("  usando %s\n" % origen_ctx)
 
 for host in SERVIDORES:
     try:
-        ctx = ssl.create_default_context()
+        ctx = contexto_tls()
         with socket.create_connection((host, 993), timeout=25) as s:
             with ctx.wrap_socket(s, server_hostname=host) as t:
                 v = t.version()

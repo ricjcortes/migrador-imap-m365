@@ -100,6 +100,54 @@ def _config(clave, variable):
     return None
 
 
+def contexto_tls():
+    """
+    Contexto TLS que verifica contra un paquete de raices propio.
+
+    Por que no basta con ssl.create_default_context(). En Windows, ese contexto
+    verifica contra el almacen de certificados del sistema, y Windows descarga
+    las raices que le faltan bajo demanda durante sus propios handshakes.
+    OpenSSL, que es lo que usa Python, no dispara esa descarga: en un equipo que
+    todavia no tiene cacheada la raiz de Microsoft, la conexion falla con
+    "unable to get local issuer certificate" aunque el equipo este sano y el
+    certificado del servidor sea correcto.
+
+    Usar el paquete de certifi, que viaja dentro del ejecutable, hace que el
+    comportamiento sea el mismo en Windows, macOS y Linux y no dependa del
+    estado del almacen de cada equipo.
+
+    Si la organizacion inspecciona el trafico TLS con un proxy, su raiz no esta
+    en certifi ni puede estarlo: para ese caso se admite un paquete propio via
+    MIGRADOR_CA_BUNDLE o config.json.
+    """
+    propio = _config("CA_BUNDLE", "MIGRADOR_CA_BUNDLE")
+    if propio and os.path.exists(propio):
+        return ssl.create_default_context(cafile=propio)
+    try:
+        import certifi
+        ruta = certifi.where()
+        if os.path.exists(ruta):
+            return ssl.create_default_context(cafile=ruta)
+    except Exception:
+        pass
+    # Sin certifi se cae al almacen del sistema, que es mejor que nada.
+    return ssl.create_default_context()
+
+
+def _explicar_ssl(host, e):
+    """Traduce un fallo de verificacion TLS a algo sobre lo que se pueda actuar."""
+    return (
+        "No se pudo establecer una conexion segura con %s.\n\n"
+        "Detalle tecnico: %s\n\n"
+        "Las causas habituales son dos:\n"
+        "  - El equipo esta detras de un proxy que inspecciona el trafico. En ese\n"
+        "    caso hace falta el certificado raiz de la organizacion: pideselo a\n"
+        "    TI y apunta a el con la variable MIGRADOR_CA_BUNDLE, o ponlo en un\n"
+        "    config.json junto al ejecutable como \"ca_bundle\".\n"
+        "  - La fecha y hora del equipo estan mal, lo que invalida cualquier\n"
+        "    certificado. Comprueba que sean correctas." % (host, e))
+
+
 APP_ID_POR_DEFECTO = _config("APP_ID", "MIGRADOR_APP_ID")
 HOST_ORIGEN = _config("HOST_ORIGEN", "MIGRADOR_HOST_ORIGEN") or "imap.secureserver.net"
 TENANT_ID = _config("TENANT_ID", "MIGRADOR_TENANT_ID") or "organizations"
@@ -296,10 +344,11 @@ def conectar_titan(buzon, password, intentos=3):
     ultimo = None
     for i in range(intentos):
         try:
-            c = imaplib.IMAP4_SSL(HOST_ORIGEN, PUERTO,
-                                  ssl_context=ssl.create_default_context())
+            c = imaplib.IMAP4_SSL(HOST_ORIGEN, PUERTO, ssl_context=contexto_tls())
             c.login(buzon, password)
             return c
+        except ssl.SSLError as e:
+            raise CredencialOrigen(_explicar_ssl(HOST_ORIGEN, e))
         except imaplib.IMAP4.error as e:
             ultimo = e
             if i < intentos - 1:
@@ -346,7 +395,10 @@ def obtener_token(app_id, cache_ruta=None, al_mostrar_codigo=None):
 
 
 def conectar_exo(upn, token):
-    c = imaplib.IMAP4_SSL(EXO_HOST, PUERTO, ssl_context=ssl.create_default_context())
+    try:
+        c = imaplib.IMAP4_SSL(EXO_HOST, PUERTO, ssl_context=contexto_tls())
+    except ssl.SSLError as e:
+        raise RuntimeError(_explicar_ssl(EXO_HOST, e))
     cadena = f"user={upn}\x01auth=Bearer {token}\x01\x01"
     c.authenticate("XOAUTH2", lambda _: cadena.encode())
     return c

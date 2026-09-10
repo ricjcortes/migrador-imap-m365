@@ -74,6 +74,58 @@ jobs:
       - name: Construir
         run: pyinstaller --noconfirm --clean receta/MigradorCorreo.spec
 
+      - name: Firmar (solo Windows)
+        # El certificado NO vive en el repositorio y no debe vivir nunca ahi.
+        # Una llave de firma de codigo en un repositorio la puede extraer
+        # cualquiera con acceso de lectura, y sirve para firmar malware que
+        # Windows presentara como proveniente de Legacy. Por eso llega como
+        # secreto del repositorio, se materializa en un archivo temporal del
+        # ejecutor durante la construccion, y se borra en el bloque finally
+        # pase lo que pase.
+        #
+        # Si los secretos no estan configurados, el paso no falla: avisa y sigue.
+        # Un binario sin firmar es peor que uno firmado, pero mejor que ningun
+        # binario.
+        if: matrix.so == 'windows-latest'
+        shell: pwsh
+        env:
+          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERT_PFX_BASE64)) {
+            Write-Host "Sin certificado configurado; el binario sale sin firmar."
+            Write-Host "Define los secretos WINDOWS_CERT_PFX_BASE64 y WINDOWS_CERT_PASSWORD."
+            exit 0
+          }
+
+          # signtool no esta en el PATH del ejecutor: vive en el SDK de Windows y
+          # hay una copia por version. Se toma la mas reciente.
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
+                      -ErrorAction SilentlyContinue |
+                      Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "No se encontro signtool.exe en el SDK de Windows." }
+
+          $pfx = Join-Path $env:RUNNER_TEMP "firma.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+
+            # El sellado de tiempo no es opcional: sin el, la firma deja de ser
+            # valida el dia que expire el certificado, y los binarios ya
+            # repartidos empiezan a dar aviso de golpe.
+            & $signtool.FullName sign `
+              /f $pfx /p $env:CERT_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              dist\MigradorCorreo.exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign fallo con codigo $LASTEXITCODE" }
+
+            & $signtool.FullName verify /pa /v dist\MigradorCorreo.exe
+            if ($LASTEXITCODE -ne 0) { throw "la firma no verifica" }
+            Write-Host "Binario firmado y verificado."
+          }
+          finally {
+            if (Test-Path $pfx) { Remove-Item $pfx -Force }
+          }
+
       - name: Firma ad-hoc (solo macOS)
         if: startsWith(matrix.so, 'macos')
         run: codesign --force --deep --sign - dist/MigradorCorreo || true
