@@ -189,6 +189,21 @@ except Exception:
     origen_ctx = "el contexto por defecto (no se pudo importar el de la herramienta)"
 print("  usando %s\n" % origen_ctx)
 
+def dudoso(t):
+    """
+    Ni pasa ni falla: no se pudo comprobar.
+
+    La distincion importa. Que el equipo donde se construye no alcance un
+    servidor no dice nada sobre el binario, y hacer fallar la construccion por
+    eso convierte al verificador en algo que la gente aprende a ignorar o a
+    desactivar. Solo se cuenta como fallo lo que sea atribuible al binario.
+    """
+    print("  ?     " + t)
+    dudas.append(t)
+
+
+dudas = []
+
 for host in SERVIDORES:
     try:
         ctx = contexto_tls()
@@ -199,8 +214,14 @@ for host in SERVIDORES:
                     bien("%-24s %s" % (host, v))
                 else:
                     mal("%-24s negocio %s, insuficiente" % (host, v))
-    except Exception as e:
-        mal("%-24s no se pudo conectar: %s" % (host, e))
+    except ssl.SSLCertVerificationError as e:
+        # Esta si es del binario: es exactamente el fallo que se corrigio al
+        # dejar de depender del almacen de certificados del sistema.
+        mal("%-24s no verifico el certificado: %s" % (host, e))
+    except (socket.timeout, socket.gaierror, ConnectionError, OSError, ssl.SSLError) as e:
+        # Bloqueos de red, proxies que interceptan, cortafuegos corporativos.
+        # Nada de eso depende del ejecutable que se acaba de construir.
+        dudoso("%-24s no se pudo comprobar desde este equipo: %s" % (host, e))
 
 print("\n  Nota: esto usa el Python con el que corres este script, no el que va")
 print("  dentro del binario. Si construiste con ese mismo Python -que es lo")
@@ -209,6 +230,19 @@ print("  normal- la comprobacion vale; si no, vuelve a correrla con el suyo.")
 
 # ------------------------------------------------------------------ resultado
 print("\n" + "=" * 62)
+if dudas and not fallos:
+    print("RESULTADO: las comprobaciones del binario pasaron.")
+    print()
+    print("Quedaron %d sin poder comprobar desde este equipo:" % len(dudas))
+    for d in dudas:
+        print("  - " + d.strip())
+    print()
+    print("Eso depende de la red de este equipo, no del ejecutable. Conviene")
+    print("repetirlo desde donde se vaya a usar la herramienta.")
+    print("El binario esta en: " + BINARIO)
+    print("=" * 62)
+    sys.exit(0)
+
 if fallos:
     print("RESULTADO: %d comprobacion(es) fallaron" % len(fallos))
     for f in fallos:

@@ -51,6 +51,12 @@ def main():
     print("Para cerrar el programa: cierra esta ventana.")
     print()
 
+    from migrador import BITACORA, anotar
+    anotar("arranque del ejecutable")
+    print("Si algo falla, envia este archivo a quien te dio la herramienta:")
+    print("  " + BITACORA)
+    print()
+
     from interfaz import main as arrancar
     arrancar()
 
@@ -68,7 +74,20 @@ if __name__ == "__main__":
         print("=" * 58)
         traceback.print_exc()
         print()
-        print("Copia este texto y enviaselo a quien te dio la herramienta.")
+        # Al archivo tambien: la ventana se cierra y con ella el unico rastro.
+        ruta = None
+        try:
+            from migrador import BITACORA, anotar
+            anotar("FALLO EN EL ARRANQUE:\n" + traceback.format_exc())
+            ruta = BITACORA
+        except Exception:
+            pass
+        if ruta:
+            print("Esto quedo guardado en:")
+            print("  " + ruta)
+            print()
+        print("Envia ese archivo, o copia el texto de arriba, a quien te dio la")
+        print("herramienta.")
         try:
             input("\nPulsa Intro para cerrar...")
         except EOFError:

@@ -41,6 +41,7 @@ import base64
 import getpass
 import imaplib
 import os
+import platform
 import re
 import signal
 import sqlite3
@@ -178,6 +179,33 @@ def dir_datos():
 
 
 LEDGER = os.path.join(dir_datos(), "avance.sqlite3")
+BITACORA = os.path.join(dir_datos(), "registro.log")
+
+
+def anotar(texto):
+    """
+    Deja constancia en un archivo de lo que va pasando.
+
+    Por que hace falta. Esta herramienta corre en el equipo de otra persona, y
+    cuando algo falla el mensaje aparece en una ventana que se cierra. Pedirle
+    despues "que decia exactamente" no funciona: nadie guarda eso. Con un archivo
+    hay algo concreto que enviar.
+
+    No se escribe aqui nada que no deba salir del equipo: ni contrasenas, ni
+    tokens, ni el contenido de los mensajes. Solo que se hizo y que fallo.
+    """
+    try:
+        # Si crece demasiado se conserva la ultima mitad. Un registro que llena
+        # el disco de alguien es peor que no tener registro.
+        if os.path.exists(BITACORA) and os.path.getsize(BITACORA) > 2_000_000:
+            with open(BITACORA, "r", encoding="utf-8", errors="replace") as f:
+                cola = f.read()[-1_000_000:]
+            with open(BITACORA, "w", encoding="utf-8") as f:
+                f.write(cola)
+        with open(BITACORA, "a", encoding="utf-8") as f:
+            f.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), texto))
+    except OSError:
+        pass   # no poder registrar nunca debe tumbar la migracion
 
 # Banderas que tienen sentido copiar. \Recent no se puede fijar y es del servidor.
 BANDERAS_UTILES = {"\\Seen", "\\Answered", "\\Flagged", "\\Draft"}
@@ -558,6 +586,10 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 kw.setdefault("nivel", "info")
                 kw.setdefault("detalle", kw.get("texto", ""))
                 kw.setdefault("texto", None)
+                anotar("aviso: " + str(kw.get("detalle") or kw.get("texto")))
+            elif tipo in ("estado", "plan", "fin"):
+                anotar("%s: %s" % (tipo, {k: v for k, v in kw.items()
+                                          if k not in ("tipo", "codigo", "url")}))
             progreso(kw)
 
     def parar():
@@ -566,7 +598,11 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         return bool(debe_parar and debe_parar())
 
     reg = Registro()
-    emitir("estado", texto="Conectando a Titan")
+    anotar("=" * 60)
+    anotar("inicio de migracion  origen=%s  destino=%s  carpeta=%r"
+           % (buzon, upn, destino))
+    anotar("plataforma %s %s  host origen %s" % (sys.platform, platform.machine(), HOST_ORIGEN))
+    emitir("estado", texto="Conectando al buzon de origen")
     src = conectar_titan(buzon, password)
 
     emitir("estado", texto="Autenticando en Microsoft 365")

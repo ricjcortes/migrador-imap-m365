@@ -41,7 +41,8 @@ import urllib.parse
 import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from migrador import migrar_buzon, generar_reporte, APP_ID_POR_DEFECTO, dir_datos  # noqa: E402
+from migrador import (migrar_buzon, generar_reporte, APP_ID_POR_DEFECTO,  # noqa: E402
+                      dir_datos, BITACORA, anotar)
 
 TESTIGO = secrets.token_urlsafe(24)
 
@@ -63,6 +64,7 @@ ESTADO = {
     "avisos": [],        # lo que se le muestra a la persona
     "resumen": None,
     "error": None,
+    "bitacora": None,
 }
 # El detalle tecnico se guarda aparte y no viaja al navegador: no le sirve a
 # quien esta migrando su correo y solo le hace pensar que algo se rompio. Va al
@@ -127,7 +129,9 @@ def hilo_migracion(datos, app_id):
             limite_mb=int(datos.get("limite_mb") or 0),
             progreso=al_evento, debe_parar=lambda: DETENER["si"])
     except Exception as e:
-        fijar(fase="error", error=str(e))
+        import traceback
+        anotar("FALLO EN LA MIGRACION:\n" + traceback.format_exc())
+        fijar(fase="error", error=str(e), bitacora=BITACORA)
     finally:
         # La contrasena sale de memoria pase lo que pase.
         datos["password"] = None
@@ -237,7 +241,11 @@ a{color:var(--acento)}
   <div class="pista">Guardalo o imprimelo: deja constancia de que se copio y de donde a donde.</div>
 </div>
 
-<div class="panel" id="p-err" hidden><b class="mal">No se pudo completar</b><div class="pista" id="t-err"></div></div>
+<div class="panel" id="p-err" hidden>
+  <b class="mal">No se pudo completar</b>
+  <div class="pista" id="t-err" style="white-space:pre-wrap"></div>
+  <div class="pista" id="t-log" style="margin-top:14px"></div>
+</div>
 </div>
 <script>
 const T = new URLSearchParams(location.search).get("t");
@@ -351,7 +359,12 @@ async function sondear(){
     $("reporte").href = "/reporte?t="+T;
     return;
   }
-  if(e.fase === "error"){ $("t-err").textContent = e.error || ""; return; }
+  if(e.fase === "error"){
+    $("t-err").textContent = e.error || "";
+    $("t-log").textContent = e.bitacora
+      ? "Envia este archivo a quien te dio la herramienta: " + e.bitacora : "";
+    return;
+  }
   setTimeout(sondear, 1000);
 }
 </script></body></html>

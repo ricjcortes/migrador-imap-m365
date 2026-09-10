@@ -151,8 +151,25 @@ No es un adorno: es lo que separa «construyó sin errores» de «funciona».
    lo que exigen los servidores: el binario arranca perfectamente y luego no
    puede conectarse a nada.
 
-Si algo falla, sale con error y dice qué. No entregues el binario hasta que pase
-todo.
+Distingue **fallar** de **no poder comprobar**. Que el equipo donde se construye
+no alcance un servidor no dice nada sobre el binario: eso sale marcado con `?` y
+no tumba la construcción. Solo se cuenta como fallo lo que sea atribuible al
+ejecutable. Un verificador que falla por motivos ajenos es un verificador que la
+gente aprende a ignorar.
+
+## Si algo falla en el equipo de alguien
+
+La herramienta deja un registro en su carpeta de datos:
+
+| | |
+|---|---|
+| macOS | `~/Library/Application Support/MigradorCorreo/registro.log` |
+| Windows | `%LOCALAPPDATA%\MigradorCorreo\registro.log` |
+
+Ahí queda qué se hizo y qué falló, con el detalle técnico completo. **No contiene
+contraseñas, ni tokens, ni el contenido de los mensajes.** La ruta se muestra al
+arrancar y también en la pantalla de error, para que haya algo concreto que pedir
+en vez de «¿qué decía exactamente?».
 
 ---
 
