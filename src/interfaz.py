@@ -61,6 +61,8 @@ ESTADO = {
     "carpeta_total": 0,
     "velocidad": 0.0,
     "segundos": 0.0,
+    "marca": 0.0,          # reloj de pared del ultimo avance
+    "ultimo_mb": 0.0,      # tamanio del ultimo mensaje copiado
     "avisos": [],        # lo que se le muestra a la persona
     "resumen": None,
     "error": None,
@@ -109,7 +111,8 @@ def al_evento(e):
         fijar(fase="migrando", mensajes=e["mensajes"], bytes=e["bytes"],
               carpeta=e["carpeta"], carpeta_hechos=e["carpeta_hechos"],
               carpeta_total=e["carpeta_total"], velocidad=e["velocidad"],
-              segundos=e["segundos"], pendientes_totales=e["pendientes_totales"])
+              segundos=e["segundos"], pendientes_totales=e["pendientes_totales"],
+              marca=e.get("marca", 0.0), ultimo_mb=e.get("ultimo_mb", 0.0))
     elif t == "aviso":
         if e.get("detalle"):
             agregar_diagnostico(e["detalle"])

@@ -288,6 +288,11 @@ def mutf7_decodificar(texto):
 class Registro:
     def __init__(self, ruta=LEDGER):
         self.db = sqlite3.connect(ruta)
+        # WAL y synchronous=NORMAL hacen que confirmar despues de cada mensaje
+        # cueste poco frente a la ida y vuelta de IMAP, que es lo que permite
+        # guardar tan seguido sin penalizar la migracion.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS migrado (
                 buzon TEXT NOT NULL,
@@ -696,8 +701,13 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 conex[extremo].logout()
             except Exception:
                 pass
+        # Doce intentos con techo de cinco minutos cubren mas de media hora. El
+        # caso que obliga a ser asi de paciente no es la red: es que la persona
+        # cierre la tapa del portatil a media migracion. Con seis intentos y
+        # techo de un minuto, una suspension de diez minutos mataba una corrida
+        # de horas.
         espera = 2
-        for intento in range(6):
+        for intento in range(12):
             time.sleep(espera)
             try:
                 conex["src"] = conectar_titan(buzon, password)
@@ -710,7 +720,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 # el proceso todavia se esta resolviendo solo.
                 emitir("aviso", nivel="tecnico",
                        detalle="reintento %d fallido: %s" % (intento + 1, e))
-                espera = min(espera * 2, 60)
+                espera = min(espera * 2, 300)
         emitir("aviso", texto="No se pudo restablecer la conexion",
                detalle="agotados los 6 reintentos de reconexion")
         return False
@@ -802,9 +812,34 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 reg.anotar_fallo(buzon, legible, uid, "no se pudo escribir tras reconectar")
                 tot_err += 1
                 continue
+
+            # Un APPEND rechazado no siempre es un mensaje malo: en buzones
+            # grandes lo habitual es que Exchange este limitando el ritmo, y ahi
+            # lo que toca es esperar y repetir, no dar el mensaje por perdido.
+            # Sin esto, una tanda de limitacion se traduce en decenas de correos
+            # que nunca llegaron y nadie echa en falta hasta mucho despues.
             okA, respA = r
+            reintentos_append = 0
+            while okA != "OK" and reintentos_append < 4:
+                reintentos_append += 1
+                pausa = 15 * reintentos_append
+                emitir("aviso", nivel="tecnico",
+                       detalle="APPEND rechazado (%s); reintento %d tras %ds"
+                       % (respA, reintentos_append, pausa))
+                if reintentos_append == 1:
+                    emitir("aviso",
+                           texto="El servidor esta limitando el ritmo. Esperando",
+                           detalle="primer APPEND rechazado en %s" % legible)
+                time.sleep(pausa)
+                ok, r = con_reintento("reescribir uid %d" % uid, escribir)
+                if not ok:
+                    break
+                okA, respA = r
+
             if okA != "OK":
-                reg.anotar_fallo(buzon, legible, uid, "APPEND %s" % (respA,))
+                reg.anotar_fallo(buzon, legible, uid,
+                                 "APPEND rechazado tras %d reintentos: %s"
+                                 % (reintentos_append, respA))
                 tot_err += 1
                 continue
 
@@ -822,9 +857,17 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                    carpeta=legible, carpeta_hechos=hechos_carpeta,
                    carpeta_total=len(pendientes),
                    velocidad=(tot_bytes / 1048576) / max(dt, 0.001),
-                   segundos=dt)
-            if hechos_carpeta % 25 == 0:
-                reg.commit()
+                   segundos=dt,
+                   # Reloj de pared y tamano del ultimo mensaje. Sin esto, desde
+                   # fuera no hay forma de distinguir un proceso atascado de uno
+                   # que lleva tres minutos con un adjunto de 30 MB.
+                   marca=time.time(),
+                   ultimo_mb=len(cuerpo) / 1048576)
+            # Se confirma tras CADA mensaje. Antes era cada veinticinco, y un
+            # corte en medio dejaba hasta veinticinco mensajes copiados en
+            # destino pero sin anotar: al reanudar se volvian a copiar y
+            # quedaban duplicados en el buzon de la persona.
+            reg.commit()
 
         if sin_leer_dst:
             # STORE exige la carpeta seleccionada en modo escritura, que es la
