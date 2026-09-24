@@ -54,6 +54,19 @@ import time
 # para migrar desde cualquier otro servidor IMAP.
 EXO_HOST = "outlook.office365.com"
 PUERTO = 993
+
+# Tiempo maximo que una operacion de socket puede quedarse esperando.
+#
+# Sin esto, imaplib bloquea para siempre. Si la conexion muere en silencio -sin
+# FIN ni RST, que es lo que hace un cortafuegos o un NAT al descartar un flujo
+# inactivo- la lectura no vuelve nunca y no se lanza ninguna excepcion. Toda la
+# reconexion, que solo actua ante errores, queda fuera de juego: el proceso
+# parece vivo, no consume CPU, no tiene conexiones abiertas y no avanza.
+#
+# Ocurrio de verdad: una migracion se quedo parada mas de dos horas al 69% sin
+# un solo mensaje de error. Cinco minutos es de sobra para el mensaje mas pesado
+# y corta el bloqueo indefinido.
+TIEMPO_ESPERA = 300
 SCOPE_IMAP = ["https://outlook.office.com/IMAP.AccessAsUser.All"]
 
 def _config(clave, variable):
@@ -304,6 +317,19 @@ class Registro:
                 ts REAL,
                 PRIMARY KEY (buzon, carpeta, uidvalidity, uid_origen)
             )""")
+        # Que carpeta de destino se uso la ultima vez para este buzon.
+        #
+        # El registro de avance se indexa por buzon de origen, no por destino.
+        # Sin esto, teclear el nombre de la carpeta con una mayuscula distinta
+        # crea un destino nuevo, se copia todo otra vez y lo anterior queda
+        # huerfano en una carpeta que nadie vuelve a mirar. Paso: cuatro intentos
+        # produjeron cuatro carpetas.
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS destino_usado (
+                buzon TEXT PRIMARY KEY,
+                destino TEXT,
+                ts REAL
+            )""")
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS fallo (
                 buzon TEXT, carpeta TEXT, uid_origen INTEGER,
@@ -338,6 +364,16 @@ class Registro:
     def anotar_fallo(self, buzon, carpeta, uid, motivo):
         self.db.execute("INSERT INTO fallo VALUES (?,?,?,?,?)",
                         (buzon, carpeta, uid, str(motivo)[:400], time.time()))
+        self.db.commit()
+
+    def destino_previo(self, buzon):
+        f = self.db.execute("SELECT destino FROM destino_usado WHERE buzon=?",
+                            (buzon,)).fetchone()
+        return f[0] if f else None
+
+    def fijar_destino(self, buzon, destino):
+        self.db.execute("INSERT OR REPLACE INTO destino_usado VALUES (?,?,?)",
+                        (buzon, destino, time.time()))
         self.db.commit()
 
     def commit(self):
@@ -377,7 +413,8 @@ def conectar_titan(buzon, password, intentos=3):
     ultimo = None
     for i in range(intentos):
         try:
-            c = imaplib.IMAP4_SSL(HOST_ORIGEN, PUERTO, ssl_context=contexto_tls())
+            c = imaplib.IMAP4_SSL(HOST_ORIGEN, PUERTO, ssl_context=contexto_tls(),
+                                  timeout=TIEMPO_ESPERA)
             c.login(buzon, password)
             return c
         except ssl.SSLError as e:
@@ -429,7 +466,8 @@ def obtener_token(app_id, cache_ruta=None, al_mostrar_codigo=None):
 
 def conectar_exo(upn, token):
     try:
-        c = imaplib.IMAP4_SSL(EXO_HOST, PUERTO, ssl_context=contexto_tls())
+        c = imaplib.IMAP4_SSL(EXO_HOST, PUERTO, ssl_context=contexto_tls(),
+                              timeout=TIEMPO_ESPERA)
     except ssl.SSLError as e:
         raise RuntimeError(_explicar_ssl(EXO_HOST, e))
     cadena = f"user={upn}\x01auth=Bearer {token}\x01\x01"
@@ -607,15 +645,43 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
     anotar("inicio de migracion  origen=%s  destino=%s  carpeta=%r"
            % (buzon, upn, destino))
     anotar("plataforma %s %s  host origen %s" % (sys.platform, platform.machine(), HOST_ORIGEN))
-    emitir("estado", texto="Conectando al buzon de origen")
-    src = conectar_titan(buzon, password)
+    # Si la carpeta de destino cambio respecto a la corrida anterior, hay que
+    # decirlo antes de copiar nada: lo que ya estaba migrado no se vera, y se
+    # volvera a copiar entero en el sitio nuevo.
+    previo = reg.destino_previo(buzon)
+    if previo is not None and previo != destino:
+        emitir("aviso",
+               texto=("Antes se copio a la carpeta %r y ahora se indico %r. "
+                      "Lo ya copiado quedara en la carpeta anterior y se volvera "
+                      "a copiar todo en la nueva." % (previo, destino)),
+               detalle="cambio de carpeta de destino: %r -> %r" % (previo, destino))
+        anotar("AVISO: la carpeta de destino cambio de %r a %r" % (previo, destino))
+    reg.fijar_destino(buzon, destino)
 
+    # El orden importa, y antes estaba al reves.
+    #
+    # Autenticar en Microsoft exige que una persona abra el navegador, teclee un
+    # codigo e inicie sesion. Eso tarda minutos, no segundos. Si el buzon de
+    # origen se conecta antes, su sesion se queda ociosa durante toda esa espera
+    # y el servidor la cierra: al volver, el primer comando muere con un "broken
+    # pipe" que no le dice nada a nadie. Le ocurre a cualquiera que no sea
+    # instantaneo autenticandose, o sea, a todo el mundo.
+    #
+    # Primero el token, que es la parte lenta y la que depende de una persona.
+    # Solo despues se abren las dos sesiones IMAP, que asi nacen y se usan
+    # seguidas.
     emitir("estado", texto="Autenticando en Microsoft 365")
     token = obtener_token(app_id, al_mostrar_codigo=lambda f: emitir(
         "codigo", codigo=f.get("user_code"), url=f.get("verification_uri"),
         mensaje=f.get("message")))
+
+    emitir("estado", texto="Conectando con Microsoft 365")
     dst = conectar_exo(upn, token)
+
+    emitir("estado", texto="Conectando con el buzon de origen")
+    src = conectar_titan(buzon, password)
     emitir("estado", texto="Ambos extremos conectados")
+    anotar("conexiones abiertas despues de autenticar")
 
     # Se lee una sola vez que hay en destino. Es la diferencia entre una segunda
     # corrida silenciosa y una que vuelve a intentar crearlo todo.
@@ -680,8 +746,15 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
     # Las conexiones viven en un dict porque se reemplazan al reconectar y hay
     # funciones anidadas que necesitan ver el reemplazo.
     conex = {"src": src, "dst": dst}
+    # Una conexion recien abierta esta en estado AUTH, sin carpeta seleccionada.
+    # Reconectar y seguir leyendo sin volver a seleccionar falla con "FETCH
+    # illegal in state AUTH". Aqui se recuerda cual estaba abierta para poder
+    # dejar la sesion nueva como estaba la vieja.
+    seleccion = {"src": None}
 
-    def reconectar(motivo):
+    historial_reconexion = []
+
+    def reconectar(motivo, extremo="ambos"):
         """
         Rehace las dos conexiones con espera creciente.
 
@@ -696,11 +769,32 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         # para diagnosticar, pero no se le pone delante.
         emitir("aviso", texto="Se interrumpio la conexion. Reconectando",
                detalle="conexion perdida: %s" % motivo)
-        for extremo in ("src", "dst"):
+        # Se rehace SOLO el extremo que fallo. Antes se rehacian los dos, de
+        # modo que un corte del destino provocaba un inicio de sesion nuevo en
+        # el origen; encadenados, esos inicios agotan el limite de intentos del
+        # servidor de origen y la migracion muere por un problema del otro lado.
+        # Paso: veinte reconexiones en un minuto dejaron a Titan rechazando la
+        # contrasena.
+        cuales = ("src", "dst") if extremo == "ambos" else (extremo,)
+        for c in cuales:
             try:
-                conex[extremo].logout()
+                conex[c].logout()
             except Exception:
                 pass
+
+        # Freno cuando las reconexiones se amontonan: si se encadenan, el
+        # problema no es un corte puntual sino algo sistemico, y reintentar cada
+        # pocos segundos lo empeora en vez de resolverlo.
+        ahora = time.time()
+        historial_reconexion.append(ahora)
+        del historial_reconexion[:-20]
+        recientes = [t for t in historial_reconexion if ahora - t < 300]
+        if len(recientes) > 4:
+            calma = min(30 * len(recientes), 600)
+            emitir("aviso",
+                   texto="Demasiadas interrupciones seguidas. Esperando antes de continuar",
+                   detalle="%d reconexiones en 5 min; pausa de %ds" % (len(recientes), calma))
+            time.sleep(calma)
         # Doce intentos con techo de cinco minutos cubren mas de media hora. El
         # caso que obliga a ser asi de paciente no es la red: es que la persona
         # cierre la tapa del portatil a media migracion. Con seis intentos y
@@ -710,10 +804,19 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         for intento in range(12):
             time.sleep(espera)
             try:
-                conex["src"] = conectar_titan(buzon, password)
-                conex["dst"] = conectar_exo(upn, obtener_token(app_id))
+                if "src" in cuales:
+                    conex["src"] = conectar_titan(buzon, password)
+                if "dst" in cuales:
+                    conex["dst"] = conectar_exo(upn, obtener_token(app_id))
+                # Restaurar la carpeta seleccionada es parte de reconectar, no un
+                # extra: sin esto la sesion nueva no sirve para seguir leyendo y
+                # el siguiente FETCH muere. Reconectar bien significa dejarlo
+                # todo como estaba, no solo abrir el socket.
+                if "src" in cuales and seleccion["src"]:
+                    conex["src"].select('"%s"' % seleccion["src"], readonly=True)
                 emitir("aviso", texto="Conexion restablecida. La copia continua",
-                       detalle="reconectado en el intento %d" % (intento + 1))
+                       detalle="reconectado en el intento %d, carpeta %s"
+                       % (intento + 1, seleccion["src"]))
                 return True
             except Exception as e:
                 # Los reintentos fallidos no se le muestran: son ruido mientras
@@ -722,16 +825,25 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                        detalle="reintento %d fallido: %s" % (intento + 1, e))
                 espera = min(espera * 2, 300)
         emitir("aviso", texto="No se pudo restablecer la conexion",
-               detalle="agotados los 6 reintentos de reconexion")
+               detalle="agotados los 12 reintentos de reconexion")
         return False
 
-    def con_reintento(descripcion, fn, intentos=4):
+    def con_reintento(descripcion, fn, intentos=4, extremo="ambos"):
         """Ejecuta fn reconectando si la conexion se cae. Devuelve (ok, valor)."""
         for i in range(intentos):
             try:
                 return True, fn()
             except (imaplib.IMAP4.abort, OSError) as e:
-                if i == intentos - 1 or not reconectar("%s: %s" % (descripcion, e)):
+                if i == intentos - 1 or not reconectar("%s: %s" % (descripcion, e), extremo):
+                    return False, None
+            except imaplib.IMAP4.error as e:
+                # "illegal in state AUTH" significa que la sesion perdio la
+                # carpeta seleccionada. Es un problema de estado de la conexion,
+                # no del mensaje, y se arregla reconectando; tratarlo como error
+                # del mensaje aborta la migracion entera por algo recuperable.
+                if "illegal in state" not in str(e):
+                    raise
+                if i == intentos - 1 or not reconectar("%s: %s" % (descripcion, e), extremo):
                     return False, None
         return False, None
 
@@ -750,7 +862,8 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         # cualquier corte al crear una carpeta abortaba la corrida entera.
         ok, crudo_dst = con_reintento("crear carpeta " + destino_legible,
                                       lambda: asegurar_carpeta(conex["dst"], destino_legible,
-                                                               existentes))
+                                                               existentes),
+                                      extremo="dst")
         if not ok:
             emitir("aviso", texto="No se pudo crear la carpeta %s; se omite" % legible,
                    detalle="fallo al crear %s en destino" % destino_legible)
@@ -759,8 +872,10 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
             continue
         if not pendientes:
             continue
+        seleccion["src"] = crudo
         con_reintento("seleccionar " + legible,
-                      lambda: conex["src"].select('"%s"' % crudo, readonly=True))
+                      lambda: conex["src"].select('"%s"' % crudo, readonly=True),
+                      extremo="src")
 
         hechos_carpeta = 0
         # Exchange Online marca \Seen en TODO lo que recibe por APPEND, aunque el
@@ -777,7 +892,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
             def traer():
                 return conex["src"].uid("FETCH", str(uid), "(FLAGS INTERNALDATE BODY.PEEK[])")
 
-            ok, r = con_reintento("leer uid %d" % uid, traer)
+            ok, r = con_reintento("leer uid %d" % uid, traer, extremo="src")
             if not ok:
                 reg.anotar_fallo(buzon, legible, uid, "no se pudo leer tras reconectar")
                 tot_err += 1
@@ -807,7 +922,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 return conex["dst"].append('"%s"' % crudo_dst,
                                            "(%s)" % flags if flags else "", fecha, cuerpo)
 
-            ok, r = con_reintento("escribir uid %d" % uid, escribir)
+            ok, r = con_reintento("escribir uid %d" % uid, escribir, extremo="dst")
             if not ok:
                 reg.anotar_fallo(buzon, legible, uid, "no se pudo escribir tras reconectar")
                 tot_err += 1
@@ -831,7 +946,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                            texto="El servidor esta limitando el ritmo. Esperando",
                            detalle="primer APPEND rechazado en %s" % legible)
                 time.sleep(pausa)
-                ok, r = con_reintento("reescribir uid %d" % uid, escribir)
+                ok, r = con_reintento("reescribir uid %d" % uid, escribir, extremo="dst")
                 if not ok:
                     break
                 okA, respA = r
@@ -881,7 +996,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                 return True
 
             ok, _ = con_reintento("marcar como no leidos en " + destino_legible,
-                                  restaurar_no_leidos)
+                                  restaurar_no_leidos, extremo="dst")
             if ok:
                 emitir("aviso",
                        texto="%s: %d mensajes conservan su estado de no leido"
