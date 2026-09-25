@@ -166,6 +166,16 @@ APP_ID_POR_DEFECTO = _config("APP_ID", "MIGRADOR_APP_ID")
 HOST_ORIGEN = _config("HOST_ORIGEN", "MIGRADOR_HOST_ORIGEN") or "imap.secureserver.net"
 TENANT_ID = _config("TENANT_ID", "MIGRADOR_TENANT_ID") or "organizations"
 
+# De donde se lee. "imap": un servidor IMAP con usuario y contrasena, que es el
+# caso original. "m365": otro buzon de Microsoft 365, abierto con el mismo token
+# de quien inicia sesion; esa persona necesita acceso total (FullAccess) al
+# buzon de origen y al de destino. Asi el buzon de alguien que se fue, o uno
+# compartido, se vuelca en una carpeta del buzon de otra persona sin
+# contrasenas ni permisos nuevos en la aplicacion.
+MODO = (_config("MODO", "MIGRADOR_MODO") or "imap").strip().lower()
+if MODO not in ("imap", "m365"):
+    sys.exit("MODO desconocido: %r. Validos: imap, m365" % MODO)
+
 
 def dir_datos():
     """
@@ -182,7 +192,9 @@ def dir_datos():
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
     else:
         base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    d = os.path.join(base, "MigradorCorreo")
+    # Cada modo con su carpeta: comparten nombre de token y de registro, y dos
+    # servidores de modos distintos corriendo a la vez se pisarian la sesion.
+    d = os.path.join(base, "MigradorM365" if MODO == "m365" else "MigradorCorreo")
     os.makedirs(d, exist_ok=True)
     try:
         os.chmod(d, 0o700)   # el token que vive aqui vale como una sesion abierta
@@ -475,6 +487,23 @@ def conectar_exo(upn, token):
     return c
 
 
+def conectar_origen(buzon, password, app_id):
+    """Abre el buzon de origen segun el modo."""
+    if MODO != "m365":
+        return conectar_titan(buzon, password)
+    try:
+        return conectar_exo(buzon, obtener_token(app_id))
+    except imaplib.IMAP4.error as e:
+        # Exchange responde igual a "no existe", "sin IMAP" y "sin permiso":
+        # se nombran las tres en vez de adivinar.
+        raise CredencialOrigen(
+            "Microsoft 365 no dejo abrir %s con la cuenta que inicio sesion. "
+            "Comprueba que esa cuenta tenga acceso total (FullAccess) al buzon, "
+            "que el buzon tenga IMAP habilitado y que la direccion sea la "
+            "correcta. Un permiso recien concedido puede tardar hasta una hora "
+            "en aplicar. (%s)" % (buzon, e))
+
+
 # --------------------------------------------------------------------------
 # lectura de estructura
 # --------------------------------------------------------------------------
@@ -644,7 +673,9 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
     anotar("=" * 60)
     anotar("inicio de migracion  origen=%s  destino=%s  carpeta=%r"
            % (buzon, upn, destino))
-    anotar("plataforma %s %s  host origen %s" % (sys.platform, platform.machine(), HOST_ORIGEN))
+    anotar("plataforma %s %s  modo %s  host origen %s" % (
+        sys.platform, platform.machine(), MODO,
+        EXO_HOST if MODO == "m365" else HOST_ORIGEN))
     # Si la carpeta de destino cambio respecto a la corrida anterior, hay que
     # decirlo antes de copiar nada: lo que ya estaba migrado no se vera, y se
     # volvera a copiar entero en el sitio nuevo.
@@ -679,7 +710,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
     dst = conectar_exo(upn, token)
 
     emitir("estado", texto="Conectando con el buzon de origen")
-    src = conectar_titan(buzon, password)
+    src = conectar_origen(buzon, password, app_id)
     emitir("estado", texto="Ambos extremos conectados")
     anotar("conexiones abiertas despues de autenticar")
 
@@ -705,6 +736,11 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
     for crudo, legible, _ in carpetas:
         uv, total = uidvalidity_de(src, crudo)
         if uv is None:
+            continue
+        # Un buzon de Microsoft 365 expone Calendario, Contactos, Tareas y
+        # otras carpetas sin mensajes. Crearlas vacias en el destino solo
+        # ensucia la carpeta de la persona que recibe.
+        if MODO == "m365" and not total:
             continue
         previa = reg.uidvalidity_previa(buzon, legible)
         if previa is not None and previa != uv:
@@ -805,7 +841,7 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
             time.sleep(espera)
             try:
                 if "src" in cuales:
-                    conex["src"] = conectar_titan(buzon, password)
+                    conex["src"] = conectar_origen(buzon, password, app_id)
                 if "dst" in cuales:
                     conex["dst"] = conectar_exo(upn, obtener_token(app_id))
                 # Restaurar la carpeta seleccionada es parte de reconectar, no un
@@ -1048,7 +1084,8 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
 
 
 def cmd_migrar(args):
-    password = getpass.getpass("Contrasena de %s (Titan): " % args.buzon)
+    password = None if MODO == "m365" else getpass.getpass(
+        "Contrasena de %s (origen): " % args.buzon)
 
     def al_evento(e):
         t = e["tipo"]

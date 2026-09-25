@@ -42,7 +42,7 @@ import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from migrador import (migrar_buzon, generar_reporte, APP_ID_POR_DEFECTO,  # noqa: E402
-                      dir_datos, BITACORA, anotar)
+                      dir_datos, BITACORA, anotar, MODO)
 
 TESTIGO = secrets.token_urlsafe(24)
 
@@ -374,6 +374,52 @@ async function sondear(){
 """
 
 
+def pagina():
+    """
+    La misma pagina para los dos modos. En m365 no hay contrasena que pedir:
+    el origen se abre con la sesion de Microsoft de quien inicia, y la carpeta
+    no trae valor por defecto porque aqui siempre es el correo de otra persona
+    y un nombre generico lo mezclaria con lo que ya haya.
+    """
+    if MODO != "m365":
+        return PAGINA
+    cambios = [
+        ("<title>Migracion de correo</title>",
+         "<title>Traspaso de buzon de Microsoft 365</title>"),
+        ("<h1>Migracion de tu correo</h1>",
+         "<h1>Traspaso de buzon de Microsoft 365</h1>"),
+        ("Copia el contenido de tu buzon antiguo a Microsoft 365. "
+         "Tu correo antiguo no se modifica ni se borra.",
+         "Copia el correo de un buzon de Microsoft 365 a una carpeta de otro. "
+         "El buzon de origen no se modifica ni se borra."),
+        ("<label>Tu direccion de correo antigua</label>",
+         "<label>Buzon de origen</label>"),
+        ('placeholder="nombre@empresa-anterior.com"',
+         'placeholder="buzon@empresa.onmicrosoft.com"'),
+        ('<label>Contrasena de ese correo</label>\n'
+         '  <input id="password" type="password" autocomplete="off">\n'
+         '  <div class="pista">Se usa solo durante la copia. '
+         'No se guarda en ningun sitio.</div>',
+         '<input id="password" type="hidden" value="">'),
+        ("<label>Tu cuenta de Microsoft 365</label>",
+         "<label>Buzon de destino</label>"),
+        ('<input id="destino" value="Correo anterior">',
+         '<input id="destino" value="" placeholder="Correo de la persona de origen">'),
+        ("Todo se copia dentro de esta carpeta, asi tu bandeja actual no se mezcla.",
+         "Todo se copia dentro de esta carpeta. Inicia sesion una persona con "
+         "acceso total a los dos buzones."),
+        ("if(!d.buzon || !d.password || !d.upn){",
+         "if(!d.buzon || !d.upn || !d.destino){"),
+    ]
+    p = PAGINA
+    for viejo, nuevo in cambios:
+        if viejo not in p:
+            raise RuntimeError("La pagina cambio y el modo m365 no encuentra: " + viejo[:60])
+        p = p.replace(viejo, nuevo)
+    return p
+
+
+
 class Manejador(http.server.BaseHTTPRequestHandler):
     app_id = None
 
@@ -393,7 +439,7 @@ class Manejador(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         ruta = urllib.parse.urlparse(self.path).path
         if ruta == "/" and self._autorizado():
-            return self._responder(200, PAGINA, "text/html; charset=utf-8")
+            return self._responder(200, pagina(), "text/html; charset=utf-8")
         if ruta == "/reporte" and self._autorizado():
             with CERROJO:
                 resumen = dict(ESTADO.get("resumen") or {})

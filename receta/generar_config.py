@@ -2,8 +2,8 @@
 """
 Escribe src/config_compilado.py con los identificadores del tenant.
 
-Se ejecuta antes de construir. Lee MIGRADOR_APP_ID y MIGRADOR_TENANT_ID del
-entorno; si no estan, no escribe nada y el binario sale generico, pidiendo la
+Se ejecuta antes de construir. Lee MIGRADOR_APP_ID, MIGRADOR_TENANT_ID y MIGRADOR_MODO
+del entorno; si no estan, no escribe nada y el binario sale generico, pidiendo la
 configuracion al arrancar.
 
 El archivo que genera NO se versiona: es justamente lo que no debe estar en un
@@ -31,5 +31,8 @@ with open(DESTINO, "w", encoding="utf-8") as f:
     f.write('APP_ID = "%s"\n' % app_id)
     if tenant:
         f.write('TENANT_ID = "%s"\n' % tenant)
+    modo = os.environ.get("MIGRADOR_MODO", "").strip().lower()
+    if modo:
+        f.write('MODO = "%s"\n' % modo)
 
 print("Configuracion compilada: app_id %s...%s" % (app_id[:8], app_id[-4:]))
