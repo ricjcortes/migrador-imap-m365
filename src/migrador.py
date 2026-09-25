@@ -612,6 +612,18 @@ def ordenar_gmail(carpetas):
     return [(c, n) for _, c, n in especiales] + etiquetas + todos
 
 
+def gmail_reconocible(carpetas):
+    """
+    True si LIST trajo los atributos de uso especial que hacen falta, en concreto
+    el de "Todos". Gmail no anuncia SPECIAL-USE antes de iniciar sesion, asi que
+    no se puede dar por hecho: sin el atributo, "Todos" y "Spam" parecerian
+    etiquetas normales, se copiaria el buzon dos veces y llegaria el spam. Es
+    preferible negarse a copiar.
+    """
+    return any("\\all" in set(a.lower() for a in atributos.split())
+               for _, _, atributos in carpetas)
+
+
 def nuevos_gmail(ids, vistos):
     """
     ids: {uid: msgid} de una carpeta. Devuelve los uid, en orden, cuyo mensaje no
@@ -836,8 +848,14 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
                detalle="no se pudo listar el destino: %s" % e)
 
     if MODO == "gmail":
-        carpetas = [(c, n, "/") for c, n in
-                    ordenar_gmail(listar_carpetas_con_atributos(src))]
+        con_atributos = listar_carpetas_con_atributos(src)
+        if not gmail_reconocible(con_atributos):
+            raise RuntimeError(
+                "Gmail no devolvio los atributos que identifican la carpeta "
+                "\"Todos\" (\\All). Sin ellos no se puede evitar copiar todo dos "
+                "veces ni traer el spam, asi que no se copio nada. Carpetas vistas: "
+                + ", ".join(l for _, l, _ in con_atributos)[:300])
+        carpetas = [(c, n, "/") for c, n in ordenar_gmail(con_atributos)]
     else:
         carpetas = listar_carpetas(src)
     vistos_gmail = set()

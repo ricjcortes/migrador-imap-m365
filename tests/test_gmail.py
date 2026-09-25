@@ -55,6 +55,22 @@ class OrdenarGmail(unittest.TestCase):
         self.assertEqual(migrador.ordenar_gmail(ingles), [("[Gmail]/All Mail", "Archivados")])
 
 
+class ProteccionSinAtributos(unittest.TestCase):
+    """Sin atributos de uso especial no se puede distinguir "Todos" ni "Spam" de una
+    etiqueta cualquiera: copiar asi duplicaria el buzon y traeria el spam."""
+
+    def test_con_atributos_es_valido(self):
+        self.assertTrue(migrador.gmail_reconocible(GMAIL_ES))
+
+    def test_sin_ningun_atributo_no_es_valido(self):
+        sin = [(c, l, "\\HasNoChildren") for c, l, _ in GMAIL_ES]
+        self.assertFalse(migrador.gmail_reconocible(sin))
+
+    def test_sin_todos_no_es_valido_aunque_haya_otros(self):
+        sin_todos = [x for x in GMAIL_ES if "\\All" not in x[2]]
+        self.assertFalse(migrador.gmail_reconocible(sin_todos))
+
+
 class NuevosGmail(unittest.TestCase):
     def repartir(self, carpetas):
         vistos = set()
