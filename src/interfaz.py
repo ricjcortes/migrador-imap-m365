@@ -381,6 +381,8 @@ def pagina():
     no trae valor por defecto porque aqui siempre es el correo de otra persona
     y un nombre generico lo mezclaria con lo que ya haya.
     """
+    if MODO == "gmail":
+        return _aplicar(PAGINA, CAMBIOS_GMAIL)
     if MODO != "m365":
         return PAGINA
     cambios = [
@@ -411,12 +413,37 @@ def pagina():
         ("if(!d.buzon || !d.password || !d.upn){",
          "if(!d.buzon || !d.upn || !d.destino){"),
     ]
-    p = PAGINA
+    return _aplicar(PAGINA, cambios)
+
+
+def _aplicar(p, cambios):
     for viejo, nuevo in cambios:
         if viejo not in p:
-            raise RuntimeError("La pagina cambio y el modo m365 no encuentra: " + viejo[:60])
+            raise RuntimeError("La pagina cambio y el modo %s no encuentra: %s" % (MODO, viejo[:60]))
         p = p.replace(viejo, nuevo)
     return p
+
+
+# Gmail pide una contrasena de aplicacion, no la normal: si la pagina no lo dice,
+# la persona teclea la suya, Google la rechaza y el error parece del programa.
+CAMBIOS_GMAIL = [
+    ("<title>Migracion de correo</title>", "<title>Migracion desde Gmail</title>"),
+    ("<h1>Migracion de tu correo</h1>", "<h1>Migracion desde Gmail</h1>"),
+    ("Copia el contenido de tu buzon antiguo a Microsoft 365. "
+     "Tu correo antiguo no se modifica ni se borra.",
+     "Copia una cuenta de Gmail a Microsoft 365. La cuenta de Gmail no se modifica "
+     "ni se borra. Cada correo se copia una sola vez aunque tenga varias etiquetas; "
+     "Spam y Papelera no se copian."),
+    ("<label>Tu direccion de correo antigua</label>", "<label>Cuenta de Gmail</label>"),
+    ('placeholder="nombre@empresa-anterior.com"', 'placeholder="cuenta@gmail.com"'),
+    ("<label>Contrasena de ese correo</label>",
+     "<label>Contrasena de aplicacion de Google</label>"),
+    ("Se usa solo durante la copia. No se guarda en ningun sitio.",
+     "No es la contrasena normal: son 16 letras que se crean en "
+     "myaccount.google.com/apppasswords, con la verificacion en dos pasos activada. "
+     "Se usa solo durante la copia y no se guarda."),
+    ('<input id="destino" value="Correo anterior">', '<input id="destino" value="Correo Gmail">'),
+]
 
 
 

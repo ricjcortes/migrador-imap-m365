@@ -40,7 +40,12 @@ BINARIO = os.path.join(RAIZ, "dist",
                        "MigradorCorreo.exe" if ES_WINDOWS else "MigradorCorreo")
 # El de origen se puede cambiar con MIGRADOR_HOST_ORIGEN, igual que en la
 # herramienta, para verificar contra el servidor que se vaya a usar de verdad.
-SERVIDORES = (os.environ.get("MIGRADOR_HOST_ORIGEN", "imap.secureserver.net"),
+# En modo gmail el origen por defecto es Gmail: verificar Titan en un binario
+# que nunca va a hablar con Titan no prueba nada.
+_ORIGEN_POR_MODO = {"gmail": "imap.gmail.com"}
+SERVIDORES = (os.environ.get("MIGRADOR_HOST_ORIGEN")
+              or _ORIGEN_POR_MODO.get(os.environ.get("MIGRADOR_MODO", "").lower(),
+                                      "imap.secureserver.net"),
               "outlook.office365.com")
 
 fallos = []

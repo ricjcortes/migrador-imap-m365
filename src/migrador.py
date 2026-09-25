@@ -173,8 +173,12 @@ TENANT_ID = _config("TENANT_ID", "MIGRADOR_TENANT_ID") or "organizations"
 # compartido, se vuelca en una carpeta del buzon de otra persona sin
 # contrasenas ni permisos nuevos en la aplicacion.
 MODO = (_config("MODO", "MIGRADOR_MODO") or "imap").strip().lower()
-if MODO not in ("imap", "m365"):
-    sys.exit("MODO desconocido: %r. Validos: imap, m365" % MODO)
+if MODO not in ("imap", "m365", "gmail"):
+    sys.exit("MODO desconocido: %r. Validos: imap, m365, gmail" % MODO)
+# "gmail" es IMAP con contrasena de aplicacion, pero con etiquetas en vez de
+# carpetas: ver ordenar_gmail y nuevos_gmail.
+if MODO == "gmail" and not _config("HOST_ORIGEN", "MIGRADOR_HOST_ORIGEN"):
+    HOST_ORIGEN = "imap.gmail.com"
 
 
 def dir_datos():
@@ -194,7 +198,8 @@ def dir_datos():
         base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     # Cada modo con su carpeta: comparten nombre de token y de registro, y dos
     # servidores de modos distintos corriendo a la vez se pisarian la sesion.
-    d = os.path.join(base, "MigradorM365" if MODO == "m365" else "MigradorCorreo")
+    d = os.path.join(base, {"m365": "MigradorM365", "gmail": "MigradorGmail"}.get(
+        MODO, "MigradorCorreo"))
     os.makedirs(d, exist_ok=True)
     try:
         os.chmod(d, 0o700)   # el token que vive aqui vale como una sesion abierta
@@ -489,6 +494,16 @@ def conectar_exo(upn, token):
 
 def conectar_origen(buzon, password, app_id):
     """Abre el buzon de origen segun el modo."""
+    if MODO == "gmail":
+        try:
+            return conectar_titan(buzon, password)
+        except CredencialOrigen as e:
+            raise CredencialOrigen(
+                "Gmail no acepto el inicio de sesion de %s. Tiene que ser una "
+                "contrasena de aplicacion (16 letras, se crea en "
+                "myaccount.google.com/apppasswords con la verificacion en dos "
+                "pasos activada), no la contrasena normal de la cuenta. "
+                "Detalle: %s" % (buzon, e))
     if MODO != "m365":
         return conectar_titan(buzon, password)
     try:
@@ -534,6 +549,102 @@ def listar_carpetas(c):
     return salida
 
 
+def listar_carpetas_con_atributos(c):
+    """Como listar_carpetas, pero con los atributos de LIST: [(crudo, legible, atributos)]."""
+    ok, datos = c.list()
+    if ok != "OK":
+        raise RuntimeError("LIST fallo")
+    salida = []
+    for linea in datos:
+        if not isinstance(linea, bytes):
+            continue
+        m = _RE_LIST.match(linea)
+        if not m:
+            continue
+        flags = m.group("flags").decode()
+        if "\\Noselect" in flags:
+            continue
+        crudo = m.group("nombre").decode("ascii", "replace").strip()
+        if crudo.startswith('"') and crudo.endswith('"'):
+            crudo = crudo[1:-1]
+        salida.append((crudo, mutf7_decodificar(crudo), flags))
+    return salida
+
+
+# Gmail no tiene carpetas sino etiquetas. Por IMAP cada etiqueta es una carpeta,
+# asi que un mensaje con tres etiquetas aparece tres veces, y "Todos" los
+# contiene a todos otra vez. Copiar carpeta por carpeta, como con cualquier otro
+# servidor, duplica el buzon entero como minimo.
+#
+# Se decide por el atributo de uso especial (RFC 6154) y no por el nombre, que
+# cambia con el idioma de la cuenta: "[Gmail]/Enviados", "[Gmail]/Sent Mail"...
+_GMAIL_NOMBRE = {"\\sent": "Enviados", "\\drafts": "Borradores", "\\all": "Archivados"}
+# Vistas, no ubicaciones: Destacados e Importantes son marcas sobre mensajes que
+# ya estan en otra carpeta. Spam y Papelera se dejan fuera por decision: Gmail
+# los vacia solo a los 30 dias.
+_GMAIL_FUERA = {"\\flagged", "\\important", "\\junk", "\\trash"}
+
+
+def ordenar_gmail(carpetas):
+    """
+    [(crudo, legible, atributos)] -> [(crudo, nombre_en_destino)], en el orden
+    en que se reparte cada mensaje: el que aparece en varias carpetas va a la
+    primera. Recibidos, Enviados, Borradores, etiquetas por nombre, y al final
+    Todos, que solo aporta lo archivado sin etiqueta.
+    """
+    especiales, etiquetas, todos = [], [], []
+    for crudo, legible, atributos in carpetas:
+        attrs = set(a.lower() for a in atributos.split())
+        if attrs & _GMAIL_FUERA:
+            continue
+        if crudo.upper() == "INBOX":
+            especiales.append((0, crudo, "INBOX"))
+        elif "\\sent" in attrs:
+            especiales.append((1, crudo, _GMAIL_NOMBRE["\\sent"]))
+        elif "\\drafts" in attrs:
+            especiales.append((2, crudo, _GMAIL_NOMBRE["\\drafts"]))
+        elif "\\all" in attrs:
+            todos.append((crudo, _GMAIL_NOMBRE["\\all"]))
+        else:
+            etiquetas.append((crudo, legible))
+    especiales.sort()
+    etiquetas.sort(key=lambda x: x[1].lower())
+    return [(c, n) for _, c, n in especiales] + etiquetas + todos
+
+
+def nuevos_gmail(ids, vistos):
+    """
+    ids: {uid: msgid} de una carpeta. Devuelve los uid, en orden, cuyo mensaje no
+    salio ya en una carpeta anterior, y anota todos los msgid como vistos.
+
+    Un uid sin msgid se copia: ante la duda es mejor un duplicado que un
+    mensaje perdido.
+    """
+    salida = []
+    for uid in sorted(ids):
+        msgid = ids[uid]
+        if msgid is None or msgid not in vistos:
+            salida.append(uid)
+        if msgid is not None:
+            vistos.add(msgid)
+    return salida
+
+
+def parsear_msgids(datos):
+    """Respuesta de UID FETCH (X-GM-MSGID) -> {uid: msgid}."""
+    salida = {}
+    for linea in datos or []:
+        if isinstance(linea, tuple):
+            linea = linea[0]
+        if not isinstance(linea, bytes):
+            continue
+        u = re.search(rb"UID (\d+)", linea)
+        m = re.search(rb"X-GM-MSGID (\d+)", linea)
+        if u:
+            salida[int(u.group(1))] = m.group(1).decode() if m else None
+    return salida
+
+
 def uidvalidity_de(c, carpeta_cruda):
     ok, datos = c.select(f'"{carpeta_cruda}"', readonly=True)
     if ok != "OK":
@@ -551,7 +662,7 @@ def uidvalidity_de(c, carpeta_cruda):
 
 def cmd_inventario(args):
     password = getpass.getpass(f"Contrasena de {args.buzon}: ")
-    print(f"\nConectando a {TITAN_HOST} ...", flush=True)
+    print(f"\nConectando a {HOST_ORIGEN} ...", flush=True)
     c = conectar_titan(args.buzon, password)
     carpetas = listar_carpetas(c)
     print(f"{len(carpetas)} carpetas seleccionables\n")
@@ -724,7 +835,13 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         emitir("aviso", nivel="tecnico",
                detalle="no se pudo listar el destino: %s" % e)
 
-    carpetas = listar_carpetas(src)
+    if MODO == "gmail":
+        carpetas = [(c, n, "/") for c, n in
+                    ordenar_gmail(listar_carpetas_con_atributos(src))]
+    else:
+        carpetas = listar_carpetas(src)
+    vistos_gmail = set()
+    repetidos_gmail = 0
     if solo:
         carpetas = [c for c in carpetas if c[1] == solo]
         if not carpetas:
@@ -770,9 +887,22 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
 
         ok, res = src.uid("SEARCH", None, "ALL")
         uids = [int(x) for x in (res[0].split() if ok == "OK" and res[0] else [])]
+        if MODO == "gmail" and uids:
+            ok, res = src.uid("FETCH", "1:*", "(X-GM-MSGID)")
+            ids = parsear_msgids(res if ok == "OK" else [])
+            unicos = nuevos_gmail({u: ids.get(u) for u in uids}, vistos_gmail)
+            repetidos_gmail += len(uids) - len(unicos)
+            uids = unicos
         pendientes = [u for u in uids if u not in ya]
         plan.append((crudo, legible, uv, pendientes, total, len(ya)))
         total_pendientes += len(pendientes)
+    if MODO == "gmail":
+        emitir("aviso",
+               texto=("Gmail: %d mensajes distintos; %d apariciones repetidas por "
+                      "etiquetas se copian una sola vez. Spam y Papelera no se "
+                      "copian." % (len(vistos_gmail), repetidos_gmail)),
+               detalle="gmail: %d msgid unicos, %d repetidos omitidos"
+               % (len(vistos_gmail), repetidos_gmail))
     emitir("plan", carpetas=len(plan), pendientes=total_pendientes)
 
     limite = limite_mb * 1048576 if limite_mb else None
