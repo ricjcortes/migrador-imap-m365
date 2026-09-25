@@ -492,6 +492,36 @@ def conectar_exo(upn, token):
     return c
 
 
+def problema_origen_destino(modo, buzon, upn):
+    """
+    None si origen y destino se pueden combinar; si no, el motivo.
+
+    En modo m365 copiar un buzon sobre si mismo no falla ni avisa: crea dentro de
+    el una carpeta con todo su contenido, y parece una migracion buena. Ocurrio
+    de verdad al teclear el mismo buzon en los dos campos. En los otros modos las
+    direcciones iguales son sistemas distintos y no es el mismo buzon.
+    """
+    if modo == "m365" and buzon.strip().lower() == upn.strip().lower():
+        return ("El buzon de origen y el de destino son el mismo (%s). Copiarlo sobre "
+                "si mismo lo duplica dentro de si. Revisa el campo de destino." % buzon.strip())
+    return None
+
+
+def es_carpeta_previa(modo, carpeta, destino):
+    """
+    True si la carpeta de origen es la carpeta de destino de una migracion anterior
+    (o esta dentro), que hay que omitir en modo m365.
+
+    Un buzon que ya fue destino de otra migracion contiene la carpeta de aquella
+    copia. Volver a copiarla con el buzon entero duplicaria todo en el nuevo
+    destino. Se compara la carpeta entera o su ruta, no un simple prefijo de
+    texto: "Correo pfagoni viejo" no es la misma carpeta que "Correo pfagoni".
+    """
+    if modo != "m365" or not destino:
+        return False
+    return carpeta == destino or carpeta.startswith(destino + "/")
+
+
 def conectar_origen(buzon, password, app_id):
     """Abre el buzon de origen segun el modo."""
     if MODO == "gmail":
@@ -792,6 +822,11 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
             return True
         return bool(debe_parar and debe_parar())
 
+    problema = problema_origen_destino(MODO, buzon, upn)
+    if problema:
+        anotar("RECHAZADO: " + problema)
+        raise RuntimeError(problema)
+
     reg = Registro()
     anotar("=" * 60)
     anotar("inicio de migracion  origen=%s  destino=%s  carpeta=%r"
@@ -860,6 +895,14 @@ def migrar_buzon(buzon, password, upn, app_id, destino="Migracion Titan",
         carpetas = listar_carpetas(src)
     vistos_gmail = set()
     repetidos_gmail = 0
+    if MODO == "m365":
+        previas = [l for _, l, _ in carpetas if es_carpeta_previa(MODO, l, destino)]
+        if previas:
+            carpetas = [c for c in carpetas if not es_carpeta_previa(MODO, c[1], destino)]
+            emitir("aviso",
+                   texto=("El buzon de origen ya tiene una carpeta %r de una migracion "
+                          "anterior; se omite para no copiarla otra vez." % destino),
+                   detalle="omitidas carpetas previas: %s" % ", ".join(previas))
     if solo:
         carpetas = [c for c in carpetas if c[1] == solo]
         if not carpetas:
